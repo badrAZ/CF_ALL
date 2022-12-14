@@ -36,7 +36,8 @@ const SIZES = {
   },
   data: {
     filter: 1,
-    pixel: 3, // RGB
+    rgbPixel: 3, // RGB
+    rgbaPixel: 4, // RGBa
   },
 };
 const OFFSETS = {
@@ -46,6 +47,10 @@ const OFFSETS = {
 const CODES = {
   compression: 0,
   filter: 0,
+  colorType: {
+    rgp: 2,
+    alpha: [4, 6],
+  },
 };
 const TYPES = {
   header: "IHDR",
@@ -67,22 +72,22 @@ const FILTER_HANDLERS = {
   [FILTERS.none]: ({ data, x }) => [data[x], data[x + 1], data[x + 2]],
   [FILTERS.sub]: (params) => {
     const currentRGB = FILTER_HANDLERS[FILTERS.none](params);
-    const { x, start, data } = params;
+    const { x, start, data, nPixels } = params;
     if (x === start) {
       return currentRGB;
     }
 
-    const leftRIndex = x - SIZES.data.pixel;
+    const leftRIndex = x - nPixels;
     return currentRGB.map((value, key) => value + data[leftRIndex + key]);
   },
   [FILTERS.up]: (params) => {
     const currentRGB = FILTER_HANDLERS[FILTERS.none](params);
-    const { x, y, width, data } = params;
+    const { x, y, width, data, nPixels } = params;
     if (y === 0) {
       return currentRGB;
     }
 
-    const upRIndex = x - width * SIZES.data.pixel - SIZES.data.filter;
+    const upRIndex = x - width * nPixels - SIZES.data.filter;
     return currentRGB.map((value, key) => value + data[upRIndex + key]);
   },
   [FILTERS.average]: (params) => {
@@ -180,12 +185,19 @@ module.exports = class PNG {
       TRANSFORMERS.int32
     );
 
+    const colorTypeSize = SIZES.header.colorType;
+    const colorTypeOffset = heightOffset + heightSize + SIZES.header.bitDepth;
+    const colorType = await this.readBytes(
+      colorTypeSize,
+      colorTypeOffset,
+      TRANSFORMERS.int8
+    );
+    const isRgb = colorType === CODES.colorType.rgp;
+    // only rgb and rgba are supported
+    assert(isRgb || CODES.colorType.alpha.includes(colorType));
+
     const compressionSize = SIZES.header.compression;
-    const compressionOffset =
-      heightOffset +
-      heightSize +
-      SIZES.header.bitDepth +
-      SIZES.header.colorType;
+    const compressionOffset = colorTypeOffset + colorTypeSize;
     const compressionCode = await this.readBytes(
       compressionSize,
       compressionOffset,
@@ -209,6 +221,7 @@ module.exports = class PNG {
       imageWidth,
       imageHeight,
       isCompressed,
+      isRgb,
     };
   }
 
@@ -238,8 +251,9 @@ module.exports = class PNG {
     dataSize,
     imageHeight,
     imageWidth,
-    isCompressed,
     isRgb,
+    isCompressed,
+    shouldConvertToRgb,
   }) {
     const contentOffset = dataOffset + SIZES.chunk.size + SIZES.chunk.type;
     const data = await this.readBytes(
@@ -247,33 +261,35 @@ module.exports = class PNG {
       contentOffset,
       isCompressed ? inflate : undefined
     );
+    const nPixels = isRgb ? SIZES.data.rgbPixel : SIZES.data.rgbaPixel;
 
     const occurrenceByColor = {};
     for (let y = 0; y < imageHeight; y++) {
-      const filterOffset =
-        (imageWidth * SIZES.data.pixel + SIZES.data.filter) * y;
+      const filterOffset = (imageWidth * nPixels + SIZES.data.filter) * y;
       const filter = data[filterOffset];
 
       const start = filterOffset + SIZES.data.filter;
-      const end = start + imageWidth * SIZES.data.pixel;
+      const end = start + imageWidth * nPixels;
 
       const handler = FILTER_HANDLERS[filter];
       assert(!!handler);
 
-      for (let x = start; x < end; x += SIZES.data.pixel) {
-        const rgb = handler({ x, y, start, width: imageWidth, data });
+      for (let x = start; x < end; x += nPixels) {
+        const rgb = handler({ x, y, start, width: imageWidth, data, nPixels });
 
         // mutate data for next loops, required by filters logic
         rgb.forEach((v, k) => {
           data[x + k] = v;
         });
 
-        const key = isRgb ? rgb.join(",") : TRANSFORMERS.rgbToHex(rgb);
+        const key = shouldConvertToRgb
+          ? rgb.join(",")
+          : TRANSFORMERS.rgbToHex(rgb);
         occurrenceByColor[key] ??= 0;
         occurrenceByColor[key]++;
       }
     }
 
-    return occurrenceByColor
+    return occurrenceByColor;
   }
 };

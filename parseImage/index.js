@@ -31,7 +31,7 @@ function parseInputs() {
   try {
     await png.open(imagePath);
     await png.ensurePngSignature();
-    const { imageWidth, imageHeight, isCompressed } = await png.readHeader();
+    const { imageWidth, imageHeight, isCompressed, isRgb } = await png.readHeader();
     const { dataOffset, dataSize } = await png.getDataOffset();
     const occurrenceByColor = await png.readData({
       dataOffset,
@@ -39,7 +39,8 @@ function parseInputs() {
       imageHeight,
       imageWidth,
       isCompressed,
-      isRgb: colorType === COLOR_TYPES.rgb,
+      shouldConvertToRgb: colorType === COLOR_TYPES.rgb,
+      isRgb
     });
 
     // Sort/split results
